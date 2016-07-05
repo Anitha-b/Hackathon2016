@@ -1,0 +1,113 @@
+Imports System
+Imports System.IO.Ports
+Imports System.Net
+Imports System.Net.Http
+Imports System.Text
+Imports System.Runtime.Serialization
+
+' Team VelociCaptor capturing temperature & light from Arduino and sending the measure to Sage X3 
+
+Module Module1
+    Class PortDataReceived
+        Public Shared cookies As CookieContainer
+
+        Public Shared Sub Main()
+            'Consuming data from Arduino
+            Dim mySerialPort As New SerialPort("COM4")
+
+            cookies = New CookieContainer()
+
+            mySerialPort.BaudRate = 9600
+            mySerialPort.Parity = Parity.None
+            mySerialPort.StopBits = StopBits.One
+            mySerialPort.DataBits = 8
+            mySerialPort.Handshake = Handshake.None
+            mySerialPort.RtsEnable = True
+
+            AddHandler mySerialPort.DataReceived, AddressOf DataReceivedHandler
+
+            mySerialPort.Open()
+            Do
+                Threading.Thread.Sleep(1000)
+            Loop
+            mySerialPort.Close()
+        End Sub
+
+        Private Shared Sub DataReceivedHandler(
+                            ByVal sender As Object,
+                            ByVal e As SerialDataReceivedEventArgs)
+            Dim sp As SerialPort = CType(sender, SerialPort)
+            Dim indata As String = sp.ReadExisting()
+            Dim jsonOut As String
+            If InStr(indata, "{") And InStr(indata, "}") Then
+                jsonOut = Mid(indata, InStr(indata, "{"), (InStr(indata, "}") - InStr(indata, "{")) + 1)
+
+                Console.WriteLine("Data Received:" & jsonOut)
+                PostX3REST(jsonOut)
+            End If
+        End Sub
+
+        Private Shared Sub PostX3REST(ByVal jsonString As String)
+            'Post the data to X3
+            Dim hndlr As New HttpClientHandler()
+            Dim byteArray As Object
+            Dim UriTest As Uri
+            byteArray = Encoding.ASCII.GetBytes("zvc:zvc")
+            hndlr.UseCookies = True
+            hndlr.CookieContainer = cookies
+
+            UriTest = New Uri(String.Format("http://ec2-52-51-250-88.eu-west-1.compute.amazonaws.com:8124/"))
+
+            Using client As HttpClient = New System.Net.Http.HttpClient(hndlr)
+                client.BaseAddress = UriTest
+                client.DefaultRequestHeaders.Authorization = New System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(byteArray))
+                client.DefaultRequestHeaders.Add("Accept", "application/json")
+
+
+                Dim sendJson As String
+                Dim tempString As String = Mid(jsonString, InStr(jsonString, ":") + 1, (InStr(jsonString, ",")) - (InStr(jsonString, ":") + 1))
+                Dim lightString As String = Mid(jsonString, (InStr(jsonString, ",") + 1))
+                lightString = Mid(lightString, InStr(lightString, ":") + 1, (InStr(lightString, "}") - 1) - InStr(jsonString, ":") + 1)
+
+                sendJson = "{" & Chr(34) & "IDSENSOR" & Chr(34) & ":" & Chr(34) & "Temperature" & Chr(34) & "," & Chr(34) & "MEASURE" & Chr(34) & ":" & Chr(34) & tempString & Chr(34) & "}"
+
+                ' Sending temperature measure to X3
+                Dim response As HttpResponseMessage = client.PostAsync("sdata/x3/erp/X3U9REF_SEED/ZVCMEASURE?representation=ZVCMEASURE.$edit", New StringContent(sendJson, Encoding.UTF8, "application/json")).Result
+
+                If cookies.Count = 0 Then
+
+                    Dim responseCookies As Object = cookies.GetCookies(UriTest)
+                End If
+
+                If (response.IsSuccessStatusCode) Then
+
+                    Console.WriteLine("Temperature posted to X3")
+                Else
+
+                    Dim result As String = response.Content.ReadAsStringAsync().Result
+                    Console.WriteLine("Error: " & result)
+                End If
+
+                ' Sending light measure to X3
+                response = Nothing
+                sendJson = "{" & Chr(34) & "IDSENSOR" & Chr(34) & ":" & Chr(34) & "Light" & Chr(34) & "," & Chr(34) & "MEASURE" & Chr(34) & ":" & Chr(34) & lightString & Chr(34) & "}"
+
+                response = client.PostAsync("sdata/x3/erp/X3U9REF_SEED/ZVCMEASURE?representation=ZVCMEASURE.$edit", New StringContent(sendJson, Encoding.UTF8, "application/json")).Result
+                If (response.IsSuccessStatusCode) Then
+
+                    Console.WriteLine("Light posted to X3")
+                Else
+
+                    Dim result As String = response.Content.ReadAsStringAsync().Result
+                    Console.WriteLine("Error: " & result)
+                End If
+                client.Dispose()
+            End Using
+
+            hndlr.Dispose()
+            hndlr = Nothing
+
+        End Sub
+    End Class
+
+End Module
